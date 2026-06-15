@@ -8,3 +8,8 @@ build/
 venv/
 node_modules/
 *.lock
+# Large upstream files (reference upstream for full source)
+unsloth-studio/images/
+unsloth-studio/install.sh
+unsloth-studio/install.ps1
+unsloth-studio/scripts/
