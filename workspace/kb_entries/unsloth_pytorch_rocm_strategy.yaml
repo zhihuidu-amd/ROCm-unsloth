@@ -1,0 +1,53 @@
+id: unsloth_pytorch_rocm_strategy
+title: "Porting PyTorch training frameworks: DEVICE_TYPE abstraction pattern"
+category: strategy
+confidence: observed
+symptom: "Need to port a PyTorch fine-tuning/training framework (LoRA, QLoRA, triton kernels) from CUDA to AMD ROCm"
+root_cause: |
+  PyTorch ROCm implements the torch.cuda.* namespace as HIP aliases. Most
+  Python-level CUDA code runs unchanged. The actual porting work concentrates
+  on three categories:
+  (1) SM-architecture-specific CUDA features (CUTLASS FP8 block, DeepGEMM, Hopper TMA)
+  (2) JIT CUDA compilers called at runtime (FlashInfer nvcc, custom CUDA extensions)
+  (3) Device string literals hardcoded as 'cuda' where a different backend is expected
+fix: |
+  Strategy B (PyTorch extension pattern) — keep CUDA spelling where aliased, guard the rest:
+  
+  1. DO NOT change torch.cuda.* calls that PyTorch ROCm aliases:
+     - torch.cuda.is_available(), empty_cache(), synchronize(), mem_get_info()
+     - torch.cuda.Stream(), Event, device_count()
+     - torch.cuda.get_device_name() — works on ROCm
+  
+  2. ADD is_hip() guard for SM-architecture-specific features:
+     from unsloth_zoo.device_type import is_hip  # or equivalent
+     if not is_hip():
+         capability = torch.cuda.get_device_capability()
+         sm_cap = capability[0] * 10 + capability[1]
+         # ... CUTLASS FP8, DeepGEMM, etc.
+     else:
+         sm_cap = 0  # N/A on AMD; all SM90-gated code becomes unreachable
+  
+  3. SKIP JIT CUDA compilers entirely on AMD:
+     if is_hip():
+         pass  # No FlashInfer, no custom nvcc extensions
+     else:
+         _has_nvcc = shutil.which("nvcc") is not None
+         # ... FlashInfer setup
+  
+  4. Use DEVICE_TYPE_TORCH (not "cuda") for torch.amp and device strings:
+     # PyTorch ROCm: DEVICE_TYPE="hip", DEVICE_TYPE_TORCH="cuda" (torch.autocast alias)
+     torch.amp.custom_fwd(device_type=DEVICE_TYPE_TORCH)  # correct on both CUDA and ROCm
+  
+  5. torch.cuda.get_device_capability() on gfx942 returns arch-specific values
+     NOT SM-architecture values. Never use for NVIDIA SM feature dispatch.
+false_leads:
+  - "Tried translating torch.cuda.* to torch.hip.* — PyTorch ROCm implements cuda namespace directly, hip namespace does not exist in the same way"
+  - "Tried checking torch.version.cuda for CUDA detection — on ROCm this is None; use torch.version.hip or is_hip() instead"
+  - "Tried passing device='hip' to torch tensor constructors — use device='cuda' even on ROCm (PyTorch ROCm convention)"
+contributing_cases: ["unsloth-rocm-2026"]
+see_also: ["hip_port_strategy_b_pytorch"]
+evidence:
+  - "unsloth_zoo device_type.py: DEVICE_TYPE_TORCH='cuda' when DEVICE_TYPE='hip' — confirmed PyTorch ROCm convention"
+  - "torch.cuda.is_available() returns True on MI300X gfx942 ROCm 7.0.2"
+  - "torch.cuda.empty_cache/synchronize/mem_get_info all work on ROCm via alias"
+  - "Only 3 files needed changes out of 30+ files with CUDA references — 90% already portable"

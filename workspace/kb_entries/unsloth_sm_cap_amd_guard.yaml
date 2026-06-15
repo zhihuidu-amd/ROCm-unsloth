@@ -1,0 +1,39 @@
+id: unsloth_sm_cap_amd_guard
+title: "SM architecture capability (sm_cap) must be guarded on AMD — CUTLASS FP8 and DeepGEMM are NVIDIA Hopper only"
+category: porting_pattern
+confidence: observed
+symptom: "Code computes sm_cap = capability[0]*10 + capability[1] from torch.cuda.get_device_capability() then uses it to gate CUTLASS block FP8 (sm_cap==90) or DeepGEMM — wrong dispatch on AMD"
+root_cause: |
+  NVIDIA SM architecture numbers (SM80=Ampere, SM90=Hopper, SM100=Blackwell) have no
+  AMD equivalent. torch.cuda.get_device_capability() on gfx942 (MI300X, ROCm 7.0.2)
+  returns architecture-specific values that do not correspond to SM numbers.
+  
+  Features gated on sm_cap==90:
+  - CUTLASS block FP8 (torch.ops._C.cutlass_scaled_mm_supports_block_fp8) — NVIDIA only
+  - DeepGEMM (vllm.utils.deep_gemm.is_deep_gemm_supported) — Hopper TMA, NVIDIA only
+  - Weight scale transpose logic for block-quantized FP8 — NVIDIA-specific layout
+  
+  These features simply do not exist on AMD gfx9xx. The AMD equivalents for high-
+  performance GEMM are hipBLASLt (with algorithm search) and composable_kernel.
+fix: |
+  from <device_type_module> import is_hip
+  
+  if not is_hip():
+      capability = torch.cuda.get_device_capability()
+      sm_cap = capability[0] * 10 + capability[1]
+  else:
+      # AMD: no SM architecture concept.
+      # All SM90-gated paths (CUTLASS FP8, DeepGEMM) become unreachable.
+      sm_cap = 0
+  
+  # The rest of the sm_cap==90 checks evaluate correctly to False on AMD.
+  # No further changes needed for CUTLASS/DeepGEMM gating logic itself.
+false_leads:
+  - "Tried computing sm_cap from gfx942 arch number — gfx942 returns (9, 4) or similar; sm_cap=94 is meaningless for NVIDIA SM dispatch"
+  - "Tried calling torch.ops._C.cutlass_scaled_mm_supports_block_fp8 on AMD — this op is NVIDIA vLLM only; not available in ROCm vLLM builds"
+contributing_cases: ["unsloth-rocm-2026"]
+see_also: ["sm90_hopper_guard_pattern", "hipblaslt_algorithm_search"]
+evidence:
+  - "unsloth_zoo/vllm_utils.py line ~894: sm_cap computed unconditionally, used at line ~960 for sm_cap==90 CUTLASS FP8 dispatch"
+  - "AMD MI300X gfx942: CUTLASS FP8 not supported (Hopper TMA/WGMMA only); DeepGEMM not available"
+  - "hipBLASLt provides AMD equivalent: 785.5 TFLOPS at 4096^3 with algorithm search (AMDable KB: hipblaslt_algorithm_search)"

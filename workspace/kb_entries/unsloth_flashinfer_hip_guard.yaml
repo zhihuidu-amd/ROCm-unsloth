@@ -1,0 +1,40 @@
+id: unsloth_flashinfer_hip_guard
+title: "FlashInfer JIT compilation fails on AMD ROCm — nvcc not present"
+category: failure_pattern
+confidence: observed
+symptom: "Training/inference framework tries to use FlashInfer for attention; fails on AMD ROCm with 'could not find nvcc' or import errors"
+root_cause: |
+  FlashInfer JIT-compiles CUDA kernels at runtime using nvcc (NVIDIA CUDA compiler).
+  On AMD ROCm hosts, nvcc is absent (hipcc is present at /opt/rocm/bin/hipcc).
+  FlashInfer does not have a HIP/ROCm backend. The check for nvcc is done after
+  FlashInfer is found via importlib.util.find_spec(), so the import succeeds but
+  any JIT compilation or kernel invocation fails.
+fix: |
+  Add is_hip() early-exit before the FlashInfer availability + nvcc check:
+  
+  from <device_type_module> import is_hip
+  
+  if is_hip() and importlib.util.find_spec("flashinfer"):
+      # AMD: FlashInfer requires CUDA nvcc — not present on ROCm.
+      # Clear any env vars that would try to use FlashInfer.
+      for _fi_env in ("VLLM_USE_FLASHINFER_SAMPLER", "VLLM_ATTENTION_BACKEND"):
+          if os.environ.get(_fi_env, "") in ("1", "FLASHINFER"):
+              del os.environ[_fi_env]
+      print("FlashInfer skipped on AMD ROCm. Using built-in paged attention.")
+  elif not is_hip() and importlib.util.find_spec("flashinfer") ...:
+      # NVIDIA path: check for nvcc + ninja, set up FlashInfer
+      _has_nvcc = shutil.which("nvcc") is not None or ...
+      ...
+  
+  AMD alternative: vLLM built-in paged attention (VLLM_ATTENTION_BACKEND=FLASH_ATTN)
+  works correctly on MI300X without any additional packages.
+false_leads:
+  - "Tried setting CUDA_HOME to /opt/rocm to satisfy nvcc check — hipcc is not nvcc; FlashInfer cannot use it"
+  - "Tried installing flash-attn ROCm build to replace FlashInfer — flash-attn and FlashInfer are different packages; flash-attn ROCm works for attention but not as FlashInfer sampler"
+  - "Tried setting VLLM_ATTENTION_BACKEND=FLASHINFER on AMD — fails at runtime because FlashInfer has no ROCm kernels"
+contributing_cases: ["unsloth-rocm-2026"]
+see_also: ["unsloth_pytorch_rocm_strategy"]
+evidence:
+  - "unsloth_zoo/vllm_utils.py: FlashInfer check references nvcc at shutil.which('nvcc'), CUDA_HOME, CUDA_PATH, /usr/local/cuda"
+  - "AMD MI300X ROCm 7.0.2 Alola cluster: hipcc at /opt/rocm/bin/hipcc, no nvcc"
+  - "FlashInfer GitHub: no HIP/ROCm backend as of 2026-06"
