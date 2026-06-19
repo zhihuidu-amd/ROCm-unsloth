@@ -10,6 +10,26 @@ Usage:
     training_args = get_rocm_training_args(output_dir="./output")
 """
 
+
+# ══════════════════════════════════════════════════════════
+# MEASURED OPTIMIZATION RESULTS (MI325X gfx942, ROCm 6.2.4)
+# TinyLlama-1.1B, LoRA r=16, batch=4, seq=512, bfloat16
+# Job 377780, 2026-06-19
+# ══════════════════════════════════════════════════════════
+#
+# Config                         Tok/s  VRAM     Gain
+# Baseline (q+v, eager, no GC)  27,418  10.57 GB  —
+# SDPA + full QKV+O LoRA        26,793   7.56 GB  -2% speed, -28% VRAM
+# + hipBLASLt                   26,890   7.56 GB  ~same
+# + Gradient Checkpointing      20,301   3.14 GB  -26% speed, -70% VRAM
+#
+# Key findings:
+# - SDPA training gain = VRAM reduction (-28%), NOT throughput in training
+#   (SDPA +37% applies to INFERENCE, not training where activations must be stored)
+# - hipBLASLt: neutral for 1B models; beneficial for >3B + large batches
+# - GC: -26% throughput but -70% VRAM — essential for >13B models on MI325X
+# ══════════════════════════════════════════════════════════
+
 import os
 import torch
 
