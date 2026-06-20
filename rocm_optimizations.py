@@ -30,6 +30,19 @@ Usage:
 # - GC: -26% throughput but -70% VRAM — essential for >13B models on MI325X
 # ══════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════
+# KEY OPTIMIZATION FINDING (measured 2026-06-20, job 380729):
+# Batch size is the #1 throughput lever on MI325X (256GB):
+#   batch=4  → 27,418 tok/s (10.57 GB VRAM) — default, underutilizes GPU
+#   batch=16 → 41,271 tok/s (20.46 GB VRAM) — +51% throughput
+# Rule: batch × seq_len ≥ 100,000 tokens/step for good GPU utilization
+#
+# SDPA advantage is sequence-length dependent:
+#   seq=512:  SDPA ≈ eager (0% diff) — attention not bottleneck
+#   seq=2048: SDPA = +41% faster, -71% VRAM vs eager
+#   Use SDPA for all seq≥1024; required for seq≥2048 (eager OOMs first)
+# ══════════════════════════════════════════════════════════════
+
 import os
 import torch
 
